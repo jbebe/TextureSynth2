@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cassert>
+#include <shared_mutex>
 
 #include "Utils.h"
 #include "ImageUtils.h"
@@ -9,7 +10,7 @@
 template <class DataType>
 class Image {
 
-private:
+public:
 
 	Dimension dimension;
 	std::vector<DataType> data;
@@ -44,6 +45,33 @@ public:
 
 	std::vector<DataType>& Data(){
 		return data;
+	}
+
+	void Set(unsigned int x, unsigned int y, const DataType& variable) {
+		At(x, y) = variable;
+	}
+
+};
+
+template <typename DataType>
+class ThreadSafeImage: public Image<DataType> {
+
+private:
+	mutable std::shared_mutex dataSM;
+
+public:
+	ThreadSafeImage(int width = 0, int height = 0):
+		Image<DataType>::Image(width, height)
+	{}
+
+	const DataType& ConstAt(const Coordinate& coord) {
+		std::shared_lock<std::shared_mutex> lock(dataSM);
+		return Image<DataType>::At(coord);
+	}
+
+	void Set(unsigned int x, unsigned int y, const DataType& variable) {
+		std::unique_lock<std::shared_mutex> lock{dataSM};
+		Image<DataType>::At(x, y) = variable;
 	}
 
 };

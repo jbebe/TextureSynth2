@@ -76,3 +76,29 @@ inline void __wrapper_for_assert_rt(
 #endif // DEBUG
 
 #pragma warning(pop)
+
+template <typename T, typename... Args>
+T max(T head, Args... tail) {
+	return max(head, max(tail...));
+}
+
+template <typename T>
+T max(T first, T second) {
+	return first > second ? first : second;
+}
+
+template <typename T, typename... Args>
+T min(T head, Args... tail) {
+	return min(head, min(tail...));
+}
+
+template <typename T>
+T min(T first, T second) {
+	return first < second ? first : second;
+}
+
+inline bool IsPowerOf2(int num) {
+	// SSE instruction for bit count
+	AssertRT(num > 0);
+	return __popcnt(num) == 1;
+}

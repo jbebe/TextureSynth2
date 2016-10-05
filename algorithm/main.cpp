@@ -2,6 +2,8 @@
 #include <iomanip>
 #include <chrono>
 
+#define MULTI_THREAD
+
 #include "TextureGenerator.h"
 
 int main(int argc, char* argv[]){
@@ -10,8 +12,8 @@ int main(int argc, char* argv[]){
 		Dimension{256, 256},
 		/* neighbour size */ 5, // (2*x+1)
 		/* similarityThreshold */ 0.02f, // if x<threshold -> skip
-		TextureGenerator::Mode::BRUTE_FORCE,
-		/*coherenceThreshold*/ 0.1f // if x>threshold -> skip
+		TextureGenerator::GenerationMode::BRUTE_FORCE,
+		/*coherenceThreshold*/ 0.14f // if x>threshold -> skip
 	};
 
 	using namespace std::chrono;
@@ -35,3 +37,6 @@ int main(int argc, char* argv[]){
 
 	return 0;
 }
+
+// single-thread: 2:30
+// multi-thread: 0:43

@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <functional>
+#include <thread>
 
 #include "jpeg-compressor/jpgd.h"
 #include "jpeg-compressor/jpge.h"
@@ -16,13 +17,21 @@ class TextureGenerator {
 
 public:
 	using ProgressCallbackType = const std::function<void(float, std::string)>&;
-	enum Mode : int {
+	enum GenerationMode : int {
 		BRUTE_FORCE,
 		K_COHERENCE
 	};
+	enum ValueDistanceMode: int {
+		INPUT_INPUT,
+		INPUT_OUTPUT
+	};
 private:
 	using PixelImage = Image<Pixel>;
+#ifdef MULTI_THREAD
+	using ReferenceImage = ThreadSafeImage<int>;
+#else
 	using ReferenceImage = Image<int>;
+#endif
 	static constexpr int COLOR_COMPONENTS  = 3;
 	static constexpr int UNSET_PIXEL_VALUE = -1;
 
@@ -41,7 +50,7 @@ private:
 
 	int					neighbourSize;
 	float				similarityThreshold;
-	Mode				generationMode;
+	GenerationMode		generationMode;
 	float				coherenceThreshold;
 
 public:
@@ -50,7 +59,7 @@ public:
 		Dimension outputDimension,
 		int neighbourSize,
 		float similarityThreshold,
-		Mode generationMode,
+		GenerationMode generationMode,
 		float coherenceThreshold
 	):
 		inputImagePath(inputImagePath),
@@ -87,7 +96,7 @@ public:
 		free(imageData);
 	}
 
-	float GetColorDistanceSquared(const ColorData& a, const ColorData& b){
+	float GetColorDistanceSquared(const Pixel& a, const Pixel& b){
 		return
 			(a.r - b.r)*(a.r - b.r) +
 			(a.g - b.g)*(a.g - b.g) +
@@ -97,7 +106,7 @@ public:
 	inline int TileizeValue(int value, int max){
 		if (value < 0){
 			return (value + max) % max;
-		} else{
+		} else {
 			return value % max;
 		}
 	}
@@ -122,7 +131,8 @@ public:
 		AssertRT(outputRefImage.Data().size() == outputDimension.size());
 	}
 
-	float GetBlockDistance(const Coordinate& similarCoord, const Coordinate& originalCoord, bool originalIsInput = false){
+	template <ValueDistanceMode DistanceMode>
+	float GetBlockDistance(const Coordinate& similarCoord, const Coordinate& originalCoord){
 		// calculate the accumulated distance of two blocks in input image
 		// TODO: if we are not interested in a cropped block, 
 		// we should return from the for cycle instead of 
@@ -143,7 +153,7 @@ public:
 						offsetedSimCrd.y >= 0 &&
 						offsetedSimCrd.y < inputDimension.height &&
 						(
-							(originalIsInput == false) || (
+							(DistanceMode == ValueDistanceMode::INPUT_OUTPUT) || (
 								offsetedOrigCrd.x >= 0 &&
 								offsetedOrigCrd.x < inputDimension.width &&
 								offsetedOrigCrd.y >= 0 &&
@@ -152,7 +162,7 @@ public:
 						)
 					){
 						const Pixel& similarPixel = inputImage.At(offsetedSimCrd);
-						if (originalIsInput){
+						if (DistanceMode == ValueDistanceMode::INPUT_INPUT){
 							const Pixel& originalPixel = inputImage.At(offsetedOrigCrd);
 							sumOfDistances += GetColorDistanceSquared(similarPixel, originalPixel);
 						} else {
@@ -165,9 +175,11 @@ public:
 				}
 			}
 		}
-		if (foundPixelInBlock == float((neighbourSize*2+1)*(neighbourSize+1) - (neighbourSize+1))){
+		const float validPixelCount = float((neighbourSize*2 + 1)*(neighbourSize + 1) - (neighbourSize + 1));
+		if (foundPixelInBlock == validPixelCount){
 			const float normalizedDistance = sumOfDistances / foundPixelInBlock;
 			if (normalizedDistance <= similarityThreshold){
+				// too big similarity makes the result noisy
 				return FLT_MAX;
 			} else {
 				return normalizedDistance;
@@ -207,7 +219,7 @@ public:
 							if (inputImageIDs[similarPixelOffset] == UNSET_PIXEL_VALUE){
 								const Coordinate similarCoordinate{wInSim, hInSim};
 								const Coordinate currentCoordinate{wIn, hIn};
-								const float distance = GetBlockDistance(similarCoordinate, currentCoordinate, true);
+								const float distance = GetBlockDistance<ValueDistanceMode::INPUT_INPUT>(similarCoordinate, currentCoordinate);
 								if (distance < coherenceThreshold){
 									inputImageIDs[similarPixelOffset] = pixelID;
 									inputSimilarIDs[pixelID].push_back(similarPixelOffset);
@@ -223,30 +235,43 @@ public:
 		}
 	}
 
-	void Generate(ProgressCallbackType callback){
-
-		// fill up the output image with noise from input image
-		callback(0, "fill reference output with noise");
-		FillReferenceOutputWithNoise();
-
-		// create coherence map out of the input pixels
-		if (generationMode == Mode::K_COHERENCE){
-			callback(0, "loading coherence map");
-			BuildCoherenceMap(callback);
-		}
-
-		// walk over every pixel on the output image
-		for (int hOut = 0; hOut < outputDimension.height; hOut++){
-			for (int wOut = 0; wOut < outputDimension.width; wOut++){
+	void SynthesiseTextureBlock(Coordinate from, Coordinate to) {
+		for (int hOut = from.h; hOut < to.h; hOut++) {
+			for (int wOut = from.w; wOut < to.w; wOut++) {
 				Coordinate outputPixelCoord{wOut, hOut};
-				if (generationMode == Mode::BRUTE_FORCE){
+				if (generationMode == GenerationMode::BRUTE_FORCE) {
 					Coordinate candidateInputPixel;
 					float neighbourhoodMinimalDistance = FLT_MAX;
-					for (int hIn = 0; hIn < inputDimension.height; ++hIn){
-						for (int wIn = 0; wIn < inputDimension.height; ++wIn){
+					for (int hIn = 0; hIn < inputDimension.height; ++hIn) {
+						for (int wIn = 0; wIn < inputDimension.height; ++wIn) {
 							Coordinate inputPixelCoord{wIn, hIn};
-							float inputNeighbourhoodDistance = GetBlockDistance(inputPixelCoord, outputPixelCoord);
-							if (inputNeighbourhoodDistance < neighbourhoodMinimalDistance){
+							float inputNeighbourhoodDistance = GetBlockDistance<ValueDistanceMode::INPUT_OUTPUT>(inputPixelCoord, outputPixelCoord);
+							if (inputNeighbourhoodDistance < neighbourhoodMinimalDistance) {
+								neighbourhoodMinimalDistance = inputNeighbourhoodDistance;
+								candidateInputPixel.y = hIn;
+								candidateInputPixel.x = wIn;
+							}
+						}
+					}
+					outputRefImage.Set(unsigned(wOut), unsigned(hOut), candidateInputPixel.y * inputDimension.width + candidateInputPixel.x);
+				}
+			}
+		}
+	}
+
+	void SynthesiseTexture(ProgressCallbackType callback) {
+		// walk over every pixel on the output image
+		for (int hOut = 0; hOut < outputDimension.height; hOut++) {
+			for (int wOut = 0; wOut < outputDimension.width; wOut++) {
+				Coordinate outputPixelCoord{wOut, hOut};
+				if (generationMode == GenerationMode::BRUTE_FORCE) {
+					Coordinate candidateInputPixel;
+					float neighbourhoodMinimalDistance = FLT_MAX;
+					for (int hIn = 0; hIn < inputDimension.height; ++hIn) {
+						for (int wIn = 0; wIn < inputDimension.height; ++wIn) {
+							Coordinate inputPixelCoord{wIn, hIn};
+							float inputNeighbourhoodDistance = GetBlockDistance<ValueDistanceMode::INPUT_OUTPUT>(inputPixelCoord, outputPixelCoord);
+							if (inputNeighbourhoodDistance < neighbourhoodMinimalDistance) {
 								neighbourhoodMinimalDistance = inputNeighbourhoodDistance;
 								candidateInputPixel.y = hIn;
 								candidateInputPixel.x = wIn;
@@ -254,12 +279,12 @@ public:
 						}
 					}
 					outputRefImage.At(wOut, hOut) = candidateInputPixel.y * inputDimension.width + candidateInputPixel.x;
-				} else if (generationMode == Mode::K_COHERENCE){
+				} else if (generationMode == GenerationMode::K_COHERENCE) {
 					float minDistance = FLT_MAX;
 					Coordinate bestInputMatch;
-					for (int hOutBlock = -neighbourSize; hOutBlock <= neighbourSize; ++hOutBlock){
-						for (int wOutBlock = -neighbourSize; wOutBlock <= neighbourSize; ++wOutBlock){
-							if ((wOutBlock | hOutBlock) == 0){
+					for (int hOutBlock = -neighbourSize; hOutBlock <= neighbourSize; ++hOutBlock) {
+						for (int wOutBlock = -neighbourSize; wOutBlock <= neighbourSize; ++wOutBlock) {
+							if ((wOutBlock | hOutBlock) == 0) {
 								wOutBlock = INT_MAX - 1;
 								hOutBlock = INT_MAX - 1;
 								break;
@@ -269,15 +294,15 @@ public:
 								TileizeValue(wOut + wOutBlock, outputDimension.width)
 							);
 							// get the pixelID of the current output reference
-							if (inputImageIDs[inputNeighbourOffset] != UNSET_PIXEL_VALUE){
+							if (inputImageIDs[inputNeighbourOffset] != UNSET_PIXEL_VALUE) {
 								int pixelID = inputImageIDs[inputNeighbourOffset];
-								for (const int similarOffset : inputSimilarIDs[pixelID]){
+								for (const int similarOffset : inputSimilarIDs[pixelID]) {
 									const Coordinate inputOffsetCoord = OffsetToCoordinate(similarOffset, inputDimension);
-									float neighbourhoodDistance = GetBlockDistance(
+									float neighbourhoodDistance = GetBlockDistance<ValueDistanceMode::INPUT_OUTPUT>(
 										inputOffsetCoord,
 										outputPixelCoord
-									);
-									if (neighbourhoodDistance < minDistance){
+										);
+									if (neighbourhoodDistance < minDistance) {
 										minDistance = neighbourhoodDistance;
 										bestInputMatch.x = inputOffsetCoord.x;
 										bestInputMatch.y = inputOffsetCoord.y;
@@ -289,8 +314,71 @@ public:
 					outputRefImage.At(wOut, hOut) = bestInputMatch.y * inputDimension.width + bestInputMatch.x;
 				}
 			}
-			callback(float(hOut)/float(outputDimension.height), "filling output image");
+			callback(float(hOut) / float(outputDimension.height), "filling output image");
 		}
+	}
+
+	void Generate(ProgressCallbackType callback) {
+
+		// fill up the output image with noise from input image
+		callback(0, "fill reference output with noise");
+		FillReferenceOutputWithNoise();
+
+		// create coherence map out of the input pixels
+		if (generationMode == GenerationMode::K_COHERENCE) {
+			callback(0, "loading coherence map");
+			BuildCoherenceMap(callback);
+		}
+
+
+#ifdef MULTI_THREAD
+		{
+			unsigned logicalCPUs = std::thread::hardware_concurrency();
+			AssertRT(logicalCPUs != 0);
+			//int oneBlockWidth = int((sqrt(logicalCPUs)*outputDimension.width) / logicalCPUs);
+			//int oneBlockHeight = int((sqrt(logicalCPUs)*outputDimension.height) / logicalCPUs);
+			//for (int h = 0; h < outputDimension.height; ++h) {
+			//	for (int w = 0; w < outputDimension.width; ++w) {
+			//
+			//	}
+			//}
+
+			std::thread section1{[&]() {
+				SynthesiseTextureBlock(
+					Coordinate{0, 0},
+					Coordinate{outputDimension.width / 2, outputDimension.height / 2}
+				);
+			}};
+
+			std::thread section2{[&]() {
+				SynthesiseTextureBlock(
+					Coordinate{outputDimension.width / 2, 0},
+					Coordinate{outputDimension.width, outputDimension.height / 2}
+				);
+			}};
+
+			std::thread section3{[&]() {
+				SynthesiseTextureBlock(
+					Coordinate{0, outputDimension.height / 2},
+					Coordinate{outputDimension.width / 2, outputDimension.height}
+				);
+			}};
+
+			std::thread section4{[&]() {
+				SynthesiseTextureBlock(
+					Coordinate{outputDimension.width / 2, outputDimension.height / 2},
+					Coordinate{outputDimension.width, outputDimension.height}
+				);
+			}};
+
+			section1.join();
+			section2.join();
+			section3.join();
+			section4.join();
+		}
+#else
+		SynthesiseTexture(callback);
+#endif
 	}
 
 	void SaveToFile(std::string outputImagePath){
