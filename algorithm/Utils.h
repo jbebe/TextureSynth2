@@ -78,22 +78,22 @@ inline void __wrapper_for_assert_rt(
 #pragma warning(pop)
 
 template <typename T, typename... Args>
-T max(T head, Args... tail) {
-	return max(head, max(tail...));
+T mymax(T head, Args... tail) {
+	return mymax(head, mymax(tail...));
 }
 
 template <typename T>
-T max(T first, T second) {
+T mymax(T first, T second) {
 	return first > second ? first : second;
 }
 
 template <typename T, typename... Args>
-T min(T head, Args... tail) {
-	return min(head, min(tail...));
+T mymin(T head, Args... tail) {
+	return mymin(head, mymin(tail...));
 }
 
 template <typename T>
-T min(T first, T second) {
+T mymin(T first, T second) {
 	return first < second ? first : second;
 }
 
