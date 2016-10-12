@@ -316,6 +316,17 @@ public:
 	}
 
 	void GeneratePatchBased(ProgressCallbackType callback) {
+		/*
+		Megoldás menete:
+			Változók: patch mérete, ütközõzóna mérete
+			Lerakunk egy random patch-et
+			Amíg van üres rész az outputon
+				Lerakunk egy random patch-et
+				Amíg van a patch-nek feldolgozatlan ütközõzónája
+					Minden sorra/oszlopra megnézzük, hogy honnantól kéne belevágni
+					Azaz az adott pixel és 1D környezete mennyire tér el az output-tól az adott helyen
+
+		*/
 		// fill output (to see unfilled pixels)
 		for (int hOut = 0; hOut < outputDimension.height; hOut++) {
 			for (int wOut = 0; wOut < outputDimension.width; wOut++) {
@@ -323,35 +334,80 @@ public:
 			}
 		}
 		AssertRT(outputRefImage.Data().size() == outputDimension.size());
-		// place random patches on output reference
-		std::vector<Coordinate> patches;
-		const int patchSize = 20;
+
+		// init
+		const int patchSize = 40;
+		AssertRT(patchSize < inputDimension.width);
+		AssertRT(patchSize < inputDimension.height);
+		const int borderSize = 10;
+		AssertRT(borderSize < patchSize);
 		RandomGenerator randomWidth{0.0, double(inputDimension.width - patchSize)};
 		RandomGenerator randomHeight{0.0, double(inputDimension.height - patchSize)};
-		for (int h = 0; h < inputDimension.height; h += patchSize) {
-			for (int w = 0; w < inputDimension.width; w += patchSize) {
-				int rWidth = int(randomWidth());
-				int rHeight = int(randomHeight());
-				
-				for (int hOut = h; hOut < h + patchSize; ++hOut) {
-					if (hOut >= outputDimension.height) {
-						break;
-					}
-					for (int wOut = w; wOut < w + patchSize; ++wOut) {
-						if (wOut >= outputDimension.width) {
-							break;
-						}
-						const int outRefOffset = hOut * outputDimension.width + wOut;
-						const int hCount = hOut - h;
-						const int wCount = wOut - w;
-						const int inputOffset = (rHeight + hCount) * inputDimension.width + (rWidth + wCount);
-						outputRefImage.At(outRefOffset) = inputOffset;
-					}
+		// place first patch
+		{
+			const int randomOffsetWidth = int(randomWidth());
+			const int randomOffsetHeight = int(randomHeight());
+			for (int h = 0; h < patchSize; ++h) {
+				for (int w = 0; w < patchSize; ++w) {
+					const int rWidth = randomOffsetWidth + w;
+					const int rHeight = randomOffsetHeight + h;
+					outputRefImage.At(h * outputDimension.width + w) = rHeight * inputDimension.width + rWidth;
 				}
-				//patches.emplace_back(rWidth, rHeight);
 			}
 		}
-
+		// place second patch
+		{
+			for (int i = 1; i < outputDimension.width / (patchSize - borderSize); ++i) {
+				const int randomOffsetWidth = int(randomWidth());
+				const int randomOffsetHeight = int(randomHeight());
+				const int widthFrom = i * (patchSize - borderSize);
+				std::vector<int> outputRefs;
+				std::vector<int> inputRefs;
+				for (int h = 0; h < patchSize; ++h) {
+					for (int w = widthFrom; w < widthFrom + patchSize; ++w) {
+						const int rWidth = randomOffsetWidth + w - widthFrom;
+						const int rHeight = randomOffsetHeight + h;
+						AssertRT(rWidth < inputDimension.width);
+						AssertRT(rHeight < inputDimension.height);
+						const int outputOffset = h * outputDimension.width + w;
+						const int inputOffset = rHeight * inputDimension.width + rWidth;
+						if ((w-widthFrom) < borderSize) {
+							outputRefs.push_back(outputOffset);
+							inputRefs.push_back(inputOffset);
+						} else {
+							outputRefImage.At(outputOffset) = inputOffset;
+						}
+					}
+				}
+				AssertRT(outputRefs.size() == inputRefs.size());
+				AssertRT(outputRefs.size() == patchSize*borderSize);
+				for (int h = 0; h < patchSize; ++h) {
+					int minOffset;
+					float minValue = FLT_MAX;
+					for (int w = 0; w < borderSize; ++w) {
+						const int outputRef = outputRefs[h*borderSize + w];
+						const int inputRef = inputRefs[h*borderSize + w];
+						const Pixel& inputColor = inputImage.At(inputRef);
+						const Pixel& outputColor = inputImage.At(outputRefImage.At(outputRef));
+						float dist = GetColorDistanceSquared(inputColor, outputColor);
+						if (dist < minValue) {
+							minValue = dist;
+							minOffset = w;
+						}
+					}
+					for (int w = minOffset; w < borderSize; ++w) {
+						const int outputRef = outputRefs[h*borderSize + w];
+						const int inputRef = inputRefs[h*borderSize + w];
+						/*if (w == minOffset) {
+							outputRefImage.At(outputRef) = -1;
+						} else */{
+							outputRefImage.At(outputRef) = inputRef;
+						}
+					}
+					std::cout << std::endl;
+				}
+			}
+		}
 	}
 
 	void SaveToFile(std::string outputImagePath){
@@ -360,7 +416,10 @@ public:
 			outputRefImage.Data().cbegin(),
 			outputRefImage.Data().cend(),
 			[&](const int inputOffset){
-				const Pixel& pixel = inputImage.At(inputOffset);
+				Pixel pixel{1, 0, 0};
+				/*if (inputOffset != -1) */{
+					pixel = inputImage.At(inputOffset);
+				}
 				outputImageBuffer.push_back(unsigned char(pixel.r*255.f));
 				outputImageBuffer.push_back(unsigned char(pixel.g*255.f));
 				outputImageBuffer.push_back(unsigned char(pixel.b*255.f));

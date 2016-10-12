@@ -27,8 +27,8 @@ int main(int argc, char* argv[]){
 	};
 
 	TextureSynthesiser textureGenerator {
-		"2.jpg",
-		/* output dimension */ Dimension{64, 64},
+		"1.jpg",
+		/* output dimension */ Dimension{256, 256},
 		/* neighbour size */ 5, // (2*x+1)
 		/* similarityThreshold */ 0.02f, // if x<threshold -> skip
 		TextureSynthesiser::GenerationMode::PATCH_BASED,
@@ -36,7 +36,7 @@ int main(int argc, char* argv[]){
 	};
 
 	textureGenerator.Generate(generateCallback);
-	textureGenerator.SaveToFile("2_out.jpg");
+	textureGenerator.SaveToFile("1_out.jpg");
 
 	return 0;
 }
